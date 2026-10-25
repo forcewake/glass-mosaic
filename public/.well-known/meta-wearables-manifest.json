@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "Glass Mosaic",
+  "description": "An endless liquid-glass mosaic of photos, videos and sounds, searched in the browser.",
+  "appearance": {
+    "theme_color": "#8AD9EE",
+    "icon": {
+      "src": "../icon.svg",
+      "type": "monochrome"
+    }
+  }
+}
