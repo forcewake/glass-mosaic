@@ -51,12 +51,15 @@ const app = document.getElementById('app')!;
 // WebMCP (beta, off by default): register immediately at launch, before the
 // catalog loads, because eligibility is decided when the Web App launches.
 // The tools forward to the real implementation once the app is ready.
+// mosaic_get_state and mosaic_search stay registered for the whole session;
+// the per-screen set starts as the mosaic's (mosaic_open_item) and is swapped
+// for the viewer's when it opens (see syncAgentTools below).
 let agentImpl: AgentApi | null = null;
 const ready = (): AgentApi => {
   if (!agentImpl) throw new AgentNotReady('Glass Mosaic is still loading. Try again in a moment.');
   return agentImpl;
 };
-const agentRegistration = registerAgentTools({
+const agentTools = registerAgentTools({
   state: () => ready().state(),
   search: (query) => ready().search(query),
   open: (position) => ready().open(position),
@@ -88,13 +91,22 @@ if (!debug) {
   window.setTimeout(maybeHideDiag, 4000);
   window.setTimeout(maybeHideDiag, 8000);
 }
-void agentRegistration
-  .catch(() => 0)
-  .then(() => webmcpStatus(debug))
-  .then((text) => {
-    diagParts.webmcp = text;
-    renderDiag();
-  });
+// The tool count changes per screen: refresh on every `toolchange` (when the
+// host fires it) and after every screen swap. A sequence number keeps a slow,
+// stale getTools() answer from overwriting a newer one.
+let diagSeq = 0;
+const refreshWebmcpDiag = () => {
+  const seq = ++diagSeq;
+  void webmcpStatus(debug)
+    .catch(() => 'WebMCP: status failed')
+    .then((text) => {
+      if (seq !== diagSeq) return;
+      diagParts.webmcp = text;
+      renderDiag();
+    });
+};
+agentTools.onChange(refreshWebmcpDiag);
+void agentTools.ready.catch(() => undefined).then(refreshWebmcpDiag);
 
 const fieldHost = document.createElement('main');
 fieldHost.className = 'field-host';
@@ -337,6 +349,7 @@ async function start(): Promise<void> {
     viewer.open(contextFor(instance));
     history.pushState({ gm: 'viewer', id: instance.item.id } satisfies HistoryState, '');
     updateTitle();
+    syncAgentTools();
   }
 
   function stepViewer(delta: 1 | -1): ViewerContext | null {
@@ -367,6 +380,17 @@ async function start(): Promise<void> {
     field.restoreFocus();
     if (!fromHistory && (history.state as HistoryState)?.gm === 'viewer') history.back();
     updateTitle();
+    syncAgentTools();
+  }
+
+  // Per-screen WebMCP tools (docs: register only what makes sense now). The
+  // swap is idempotent, so repeated or rapid open/close calls are safe.
+  function syncAgentTools(): void {
+    try {
+      void agentTools.setScreen(viewer.isOpen ? 'viewer' : 'browse').catch(() => undefined);
+    } catch (error) {
+      console.warn('[webmcp] screen swap failed', error);
+    }
   }
 
   window.addEventListener('popstate', (event) => {

@@ -8,7 +8,7 @@ import type { AgentState } from './webmcp';
  * examples/market/index.html). Keep index.html's `<title>` equal to TITLE_RULE.
  */
 export const TITLE_RULE =
-  'Glass Mosaic \u2014 Always act with a mosaic_* tool: mosaic_search for any request to show, find or search pictures, videos or sounds; mosaic_open_item, mosaic_next_item, mosaic_previous_item and mosaic_close_viewer to move around; mosaic_get_state to read what is on screen. Never answer with a description of what you would do.';
+  'Glass Mosaic \u2014 Always act with a mosaic_* tool: mosaic_search for any request to show, find or search pictures, videos or sounds, and mosaic_get_state to read what is on screen, on every screen; mosaic_open_item on the mosaic and results; mosaic_next_item, mosaic_previous_item and mosaic_close_viewer only while the viewer is open. Never answer with a description of what you would do.';
 
 const short = (text: string, max = 60) => {
   const t = text.replace(/[\p{Cc}<>`"]/gu, ' ').replace(/\s+/g, ' ').trim();

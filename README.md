@@ -91,7 +91,7 @@ Useful URL parameters:
 | `?reduced=1` | Reduced mode: no live video previews, no camera easing, DPR 1, fewer results. Also turns on with `prefers-reduced-motion`, or by itself when frames are consistently slow. `?reduced=0` forces it off. |
 | `?render=dom` | DOM fallback with plain images instead of WebGL. Also used automatically when WebGL2 is missing or the context is lost. |
 | `?wrist=0` / `?wrist=1` | Turn the experimental wrist-twist gesture off / on (remembered in `localStorage`). |
-| `?debug=1` | Keep the diagnostics line visible: `WebMCP: unavailable` or `WebMCP: N tools` (from `document.modelContext.getTools()`, plus any registration errors) and `Wrist: on / off / unavailable`; with `?debug=1` it also lists the tool names. Without it the line shows for about 4 s at launch. |
+| `?debug=1` | Keep the diagnostics line visible: `WebMCP: unavailable` or `WebMCP: N tools` (from `document.modelContext.getTools()`, live: 3 on the mosaic and results, 5 in the viewer, plus any registration errors) and `Wrist: on / off / unavailable`; with `?debug=1` it also lists the tool names. Without it the line shows for about 4 s at launch. |
 | `?seed=42` / `?seed=math` | Shuffle seed for the mosaic order. The default is fixed so screenshots are reproducible. |
 
 ### Checks
@@ -217,18 +217,31 @@ Typing previews results after 250 ms without moving focus. A committed query
 > rollout and is **off by default**. The glasses decide at launch whether a page
 > may offer tools. The API may change.
 
-When `document.modelContext` exists, the app registers six tools right at
+When `document.modelContext` exists, the app registers its tools right at
 launch, before the catalog loads, because eligibility is decided when the app
 launches. Until the mosaic is ready, a call returns a short "still loading"
 result. Without `document.modelContext`, nothing happens.
 
-| Tool | Input | Annotations | Effect |
-| --- | --- | --- | --- |
-| `mosaic_get_state` | none | `readOnlyHint`, `idempotentHint` | Reads the screen (`mosaic` / `results` / `viewer`), the current query and match count, and the focused or open item's title, type and position. Registered first. |
-| `mosaic_search` | `{ query: string }` | `idempotentHint` | "show me X", "find X", "search for X in the mosaic": runs the same search as the field and returns the count and the top 5 titles with positions. |
-| `mosaic_open_item` | `{ position?: number }` | | Opens result *n* (1-based), or the focused card if no position is given. |
-| `mosaic_next_item` / `mosaic_previous_item` | none | | Steps in the viewer, or moves focus in the mosaic. |
-| `mosaic_close_viewer` | none | `idempotentHint` | Closes the viewer. |
+Tools are registered **per screen**, as
+[Meta's docs](https://wearables.developer.meta.com/docs/develop/webapps/agent-tools/)
+ask ("Register only the tools that make sense right now … abort when that
+screen unmounts"). Each per-screen set has one `AbortController`, passed as
+`registerTool(tool, { signal })`; opening or closing the viewer aborts the old
+set before registering the new one (a duplicate name rejects with
+`InvalidStateError`), and a swap to the current screen is a no-op.
+
+| Tool | Input | Annotations | Registered | Effect |
+| --- | --- | --- | --- | --- |
+| `mosaic_get_state` | none | `readOnlyHint`, `untrustedContentHint` | always | Reads the screen (`mosaic` / `results` / `viewer`), the current query and match count, the focused or open item's title, type and position, and `tools_now`. Registered first. |
+| `mosaic_search` | `{ query: string }` | `untrustedContentHint` | always | "show me X", "find X", "search for X in the mosaic": runs the same search as the field (closing the viewer if open) and returns the count and the top 5 titles with positions. |
+| `mosaic_open_item` | `{ position?: number }` | `untrustedContentHint` | mosaic / results | Opens result *n* (1-based), or the focused card if no position is given. |
+| `mosaic_next_item` / `mosaic_previous_item` | none | `untrustedContentHint` | viewer | Steps to the next / previous item in the viewer. |
+| `mosaic_close_viewer` | none | `untrustedContentHint` | viewer | Closes the viewer. |
+
+Only the two annotations the docs define are used. Every result carries item
+titles written by Commons contributors, so every tool sets
+`untrustedContentHint`; titles are still stripped of control characters and
+markup and capped at 90 characters.
 
 The setup copies Meta's official samples,
 [facebook/meta_glasses_webmcp](https://github.com/facebook/meta_glasses_webmcp)
@@ -250,12 +263,14 @@ The setup copies Meta's official samples,
   or an `isError` flag, which the skill says is dropped.
 - **Guarded registration.** One `safeRegister` call per tool copes with a
   synchronous throw and with a promise, a handle or nothing as the return value.
-  Only scalar parameters are used. There is no `untrustedContentHint`, since the
-  samples use only `readOnlyHint` / `idempotentHint`; catalog titles are still
-  sanitized.
+  Only scalar parameters are used, and parameter descriptions give a
+  placeholder shape rather than an example value the model could reuse. A
+  rejection caused by our own abort (a screen left before its registration
+  settled) is not reported as a failure.
 
-Every tool works on every screen, so none has to be unregistered when the view
-changes. With `?debug=1` the diagnostics line lists the registered tool names.
+The diagnostics line follows the live `getTools()` count, refreshed on every
+`toolchange` event and after every screen swap. With `?debug=1` it lists the
+registered tool names.
 To disable the tools, remove the `registerAgentTools` call in `src/app/main.ts`.
 
 ## What came from embed-anything, and what did not
@@ -371,7 +386,7 @@ audio.
   `document.modelContext` is missing (WebMCP is not enabled on the device:
   Developer Mode or rollout, then restart the glasses and the Meta AI app).
   `getTools()` only reflects this page's registry, not what the assistant sees.
-  `WebMCP: 6 tools` with Meta AI still never calling them matches the open
+  `WebMCP: 3 tools` (mosaic) or `WebMCP: 5 tools` (viewer) with Meta AI still never calling them matches the open
   [meta-wearables-webapp#31](https://github.com/facebook/meta-wearables-webapp/issues/31),
   where even the official Todo sample was not invoked. That suggests a
   platform-side cause that this app cannot fix.

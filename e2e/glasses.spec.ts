@@ -251,22 +251,50 @@ test('layout fits the 600x600 display with readable text', async ({ page }) => {
   expect((await manifest.json()).version).toBe(1);
 });
 
-test('WebMCP tools (beta) drive the same app state when the API exists', async ({ page }) => {
-  // Stand-in for the Dev Mode `document.modelContext`; the real API is off by default.
-  // registerTool returns nothing (a non-thenable), as some builds do (Meta skill).
+type FakeTool = { name: string; annotations?: Record<string, boolean>; execute: (input: unknown, options: { signal: AbortSignal }) => Promise<string> };
+
+/**
+ * Stand-in for the Dev Mode `document.modelContext`; the real API is off by
+ * default. It behaves like the documented registry: a duplicate name throws
+ * InvalidStateError, aborting the `{ signal }` option unregisters, and every
+ * change fires `toolchange`. registerTool returns nothing (a non-thenable), as
+ * some builds do (Meta skill).
+ */
+async function installFakeModelContext(page: Page) {
   await page.addInitScript(() => {
-    const tools = new Map<string, { name: string; execute: (input: unknown, options: { signal: AbortSignal }) => Promise<string> }>();
+    const tools = new Map<string, FakeTool>();
+    const target = new EventTarget();
+    const fire = () => target.dispatchEvent(new Event('toolchange'));
     Object.defineProperty(document, 'modelContext', {
       value: {
-        registerTool: (tool: { name: string; execute: (input: unknown, options: { signal: AbortSignal }) => Promise<string> }) => {
-          if (tools.has(tool.name)) throw new DOMException('duplicate', 'InvalidStateError');
+        registerTool: (tool: FakeTool, options?: { signal?: AbortSignal }) => {
+          if (tools.has(tool.name)) throw new DOMException('Tool already registered', 'InvalidStateError');
+          if (options?.signal?.aborted) throw options.signal.reason;
           tools.set(tool.name, tool);
+          options?.signal?.addEventListener('abort', () => {
+            if (tools.get(tool.name) === tool) {
+              tools.delete(tool.name);
+              fire();
+            }
+          });
+          fire();
         },
-        getTools: async () => [...tools.values()].map((t) => ({ name: t.name })),
+        getTools: async () => [...tools.values()].map((t) => ({ name: t.name, annotations: t.annotations })),
+        addEventListener: (type: string, listener: EventListener) => target.addEventListener(type, listener),
       },
     });
     (window as unknown as { __tools: typeof tools }).__tools = tools;
   });
+}
+
+const toolNames = (page: Page) =>
+  page.evaluate(() => [...(window as unknown as { __tools: Map<string, unknown> }).__tools.keys()].sort());
+
+const BROWSE_TOOLS = ['mosaic_get_state', 'mosaic_search', 'mosaic_open_item'];
+const VIEWER_TOOLS = ['mosaic_get_state', 'mosaic_search', 'mosaic_next_item', 'mosaic_previous_item', 'mosaic_close_viewer'];
+
+test('WebMCP tools (beta) drive the same app state when the API exists', async ({ page }) => {
+  await installFakeModelContext(page);
   await ready(page, './?debug=1');
   const call = async (name: string, input: unknown = {}) =>
     JSON.parse(
@@ -278,11 +306,13 @@ test('WebMCP tools (beta) drive the same app state when the API exists', async (
         [name, input] as const,
       ),
     ) as Record<string, unknown>;
-  const names = [
-    'mosaic_get_state', 'mosaic_search', 'mosaic_open_item', 'mosaic_next_item', 'mosaic_previous_item', 'mosaic_close_viewer',
-  ];
-  expect(await page.evaluate(() => [...(window as unknown as { __tools: Map<string, unknown> }).__tools.keys()])).toEqual(names);
-  await expect(page.locator('.diag')).toContainText(`WebMCP: 6 tools (${names.join(', ')})`);
+  expect(await toolNames(page)).toEqual([...BROWSE_TOOLS].sort());
+  await expect(page.locator('.diag')).toContainText(`WebMCP: 3 tools (${BROWSE_TOOLS.join(', ')})`);
+  const annotations = await page.evaluate(() =>
+    Object.fromEntries([...(window as unknown as { __tools: Map<string, FakeTool> }).__tools.values()].map((t) => [t.name, t.annotations])),
+  );
+  expect(annotations.mosaic_get_state).toEqual({ readOnlyHint: true, untrustedContentHint: true });
+  expect(annotations.mosaic_search).toEqual({ untrustedContentHint: true });
   await expect(page).toHaveTitle(/^Glass Mosaic — Always act with a mosaic_\* tool: .* Live screen: mosaic\.$/);
   expect(await call('mosaic_get_state')).toMatchObject({ mode: 'mosaic', query: null, matches: 0 });
 
@@ -295,6 +325,7 @@ test('WebMCP tools (beta) drive the same app state when the API exists', async (
 
   expect(await call('mosaic_open_item', { position: 2 })).toMatchObject({ mode: 'viewer', item: { position: expect.stringMatching(/^2 of /) } });
   await expect(page.locator('.viewer-position')).toHaveText(/^2 of \d+$/);
+  await expect.poll(() => toolNames(page)).toEqual([...VIEWER_TOOLS].sort());
   await expect(page).toHaveTitle(/Live screen: viewer, ".*" \(\w+, 2 of \d+\)\.$/);
   await call('mosaic_next_item');
   await expect(page.locator('.viewer-position')).toHaveText(/^3 of \d+$/);
@@ -305,9 +336,41 @@ test('WebMCP tools (beta) drive the same app state when the API exists', async (
   expect(await call('mosaic_close_viewer')).toMatchObject({ closed: true, mode: 'results' });
   await expect.poll(async () => (await state(page)).viewer).toBeNull();
   await expect(page).toHaveTitle(/Live screen: results for "mountains"/);
+  await expect.poll(() => toolNames(page)).toEqual([...BROWSE_TOOLS].sort());
   expect(await call('mosaic_open_item', { position: 9999 })).toMatchObject({ error: true, message: 'not found' });
   expect(await call('mosaic_search', { query: '' })).toMatchObject({ error: true });
   expect(await page.evaluate(() => history.length)).toBeLessThanOrEqual(5);
+});
+
+test('WebMCP tool set follows the screen when the viewer opens and closes by hand', async ({ page }) => {
+  await installFakeModelContext(page);
+  await ready(page, './?debug=1');
+  const diag = page.locator('.diag');
+  await expect(diag).toContainText('WebMCP: 3 tools (');
+  expect(await toolNames(page)).toEqual([...BROWSE_TOOLS].sort());
+
+  // Enter opens the viewer: the viewer set replaces mosaic_open_item.
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await state(page)).viewer).not.toBeNull();
+  await expect.poll(() => toolNames(page)).toEqual([...VIEWER_TOOLS].sort());
+  await expect(diag).toContainText('WebMCP: 5 tools (');
+
+  // The system Back gesture closes it: back to the mosaic set.
+  await page.goBack();
+  await expect.poll(async () => (await state(page)).viewer).toBeNull();
+  await expect.poll(() => toolNames(page)).toEqual([...BROWSE_TOOLS].sort());
+  await expect(diag).toContainText('WebMCP: 3 tools (');
+
+  // Rapid open/close never double-registers (a duplicate would show as "failed").
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await state(page)).viewer).not.toBeNull();
+    await page.goBack();
+    await expect.poll(async () => (await state(page)).viewer).toBeNull();
+  }
+  await expect.poll(() => toolNames(page)).toEqual([...BROWSE_TOOLS].sort());
+  await expect(diag).toContainText('WebMCP: 3 tools (');
+  await expect(diag).not.toContainText('failed');
 });
 
 test('ships the agent persona files', async ({ page }) => {
