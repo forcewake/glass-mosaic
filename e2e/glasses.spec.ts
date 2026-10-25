@@ -17,6 +17,7 @@ interface State {
   viewer: string | null;
   items: number;
   index: string;
+  wrist: string;
 }
 
 const MODEL_PATTERN = /huggingface|hf\.co|\.onnx|onnxruntime|ort-wasm|transformers|embeddinggemma|safetensors|\.f16|studio\.hdr/i;
@@ -65,6 +66,8 @@ async function settle(page: Page, ms = 600) {
 /** Waits until the visible card textures have loaded (best effort, network bound). */
 async function mediaSettled(page: Page) {
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+  // Screenshots without the launch-time diagnostics line.
+  await page.locator('.diag').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
   await page.waitForTimeout(1200);
 }
 
@@ -98,9 +101,10 @@ test('browse, search, view and go back with arrows and Enter only', async ({ pag
   await settle(page, 300);
 
   // Up from the top row reaches the search field.
+  // (Presses are spaced beyond the double-ArrowUp window to test the plain path.)
   for (let i = 0; i < 12 && (await activeLabel(page)).id !== 'search-input'; i++) {
     await page.keyboard.press('ArrowUp');
-    await settle(page, 200);
+    await settle(page, 450);
   }
   active = await activeLabel(page);
   expect(active.id).toBe('search-input');
@@ -285,4 +289,215 @@ test('WebMCP tools (beta) drive the same app state when the API exists', async (
   await expect.poll(async () => (await state(page)).viewer).toBeNull();
   expect(JSON.stringify(await call('open_item', { position: 9999 }))).toContain('not_found');
   expect(await page.evaluate(() => history.length)).toBeLessThanOrEqual(5);
+});
+
+// ------------------------------------------------------------------ quick search access
+
+/** Counts activations (clicks) of the search field: that is what opens the composer on the glasses. */
+async function watchActivation(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __activations: number };
+    w.__activations = 0;
+    document.getElementById('search-input')!.addEventListener('click', () => w.__activations++);
+  });
+}
+const activations = (page: Page) => page.evaluate(() => (window as unknown as { __activations: number }).__activations);
+
+test('double ArrowUp jumps to the search field and opens the composer; one ArrowUp still navigates', async ({ page }) => {
+  await ready(page);
+  await watchActivation(page);
+  // Move down a few rows so a single Up has somewhere to go.
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowDown');
+  await settle(page, 400);
+  const before = (await state(page)).focused;
+  await page.keyboard.press('ArrowUp');
+  await settle(page, 450);
+  const afterOne = await activeLabel(page);
+  expect(afterOne.className).toContain('card');
+  expect((await state(page)).focused).not.toBe(before);
+  expect(await activations(page)).toBe(0);
+
+  // Two quick presses: focus + activation of the semantic search field.
+  const fromCard = (await state(page)).focused;
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  const active = await activeLabel(page);
+  expect(active.id).toBe('search-input');
+  expect(await page.locator('#search-input').getAttribute('type')).toBe('search');
+  expect(await activations(page)).toBe(1);
+  // The first press of the pair moved focus at most one row: the second was consumed.
+  expect((await state(page)).focused).not.toBeNull();
+  expect(fromCard).not.toBeNull();
+
+  // Not again from inside the field.
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  expect(await activations(page)).toBe(1);
+
+  // Committed composer text (input + change only) searches.
+  await compose(page, 'mountains');
+  await expect.poll(async () => (await state(page)).mode).toBe('results');
+  expect((await activeLabel(page)).className).toContain('card');
+
+  // From inside the viewer too: closes it through history first.
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await state(page)).viewer).not.toBeNull();
+  const lengthInViewer = await page.evaluate(() => history.length);
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  await expect.poll(async () => (await state(page)).viewer).toBeNull();
+  await expect.poll(async () => (await activeLabel(page)).id).toBe('search-input');
+  expect(await activations(page)).toBe(2);
+  await expect.poll(() => page.evaluate(() => (history.state as { gm?: string } | null)?.gm)).toBe('results');
+  expect(await page.evaluate(() => history.length)).toBe(lengthInViewer);
+  // Back still clears the search and leaves the app history intact.
+  await page.goBack();
+  await expect.poll(async () => (await state(page)).mode).toBe('browse');
+});
+
+test('viewer Search button is one move from where Down lands and opens the composer', async ({ page }) => {
+  await ready(page);
+  await watchActivation(page);
+  await compose(page, 'mountains');
+  await expect.poll(async () => (await state(page)).mode).toBe('results');
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await state(page)).viewer).not.toBeNull();
+  await expect(page.locator('.viewer [data-action="search"]')).toBeVisible();
+  if (shots()) {
+    await mediaSettled(page);
+    await page.screenshot({ path: 'docs/screens/viewer.png' });
+  }
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowLeft');
+  const label = await activeLabel(page);
+  expect(label.tag).toBe('button');
+  expect(label.label).toBe('New search');
+  expect(label.focusVisible).toBe(true);
+  if (shots()) await page.screenshot({ path: 'docs/screens/viewer-search.png' });
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await state(page)).viewer).toBeNull();
+  await expect.poll(async () => (await activeLabel(page)).id).toBe('search-input');
+  expect(await activations(page)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (history.state as { gm?: string } | null)?.gm)).toBe('results');
+  await compose(page, 'rain sounds');
+  await expect(page.locator('.status')).toContainText(/\d+ matches/);
+  expect(await page.evaluate(() => history.length)).toBeLessThanOrEqual(5);
+});
+
+test('"New search" at the end of the results is reached with Down and opens the composer', async ({ page }) => {
+  await ready(page);
+  await watchActivation(page);
+  await expect(page.locator('.results-search')).toBeHidden();
+  await compose(page, 'snow');
+  await expect.poll(async () => (await state(page)).mode).toBe('results');
+  await expect(page.locator('.results-search')).toBeVisible();
+  for (let i = 0; i < 20 && !(await activeLabel(page)).className.includes('results-search'); i++) {
+    await page.keyboard.press('ArrowDown');
+    await settle(page, 120);
+  }
+  let active = await activeLabel(page);
+  expect(active.className).toContain('results-search');
+  expect(active.tag).toBe('button');
+  expect(active.focusVisible).toBe(true);
+  if (shots()) {
+    await mediaSettled(page);
+    await page.screenshot({ path: 'docs/screens/results-new-search.png' });
+  }
+  // Up goes back to the cards; Down returns in one move.
+  await page.keyboard.press('ArrowUp');
+  expect((await activeLabel(page)).className).toContain('card');
+  await page.keyboard.press('ArrowDown');
+  active = await activeLabel(page);
+  expect(active.className).toContain('results-search');
+  await page.keyboard.press('Enter');
+  expect((await activeLabel(page)).id).toBe('search-input');
+  expect(await activations(page)).toBe(1);
+  await compose(page, '');
+  await expect.poll(async () => (await state(page)).mode).toBe('browse');
+  await expect(page.locator('.results-search')).toBeHidden();
+});
+
+test('wrist twist: silent without the band, off with ?wrist=0, diagnostics with ?debug=1', async ({ page }) => {
+  await ready(page, './?debug=1');
+  // Desktop Chromium may have its own RelativeOrientationSensor, but not the glasses marker.
+  await expect.poll(async () => (await state(page)).wrist, { timeout: 8000 }).toBe('unavailable');
+  await expect(page.locator('.wrist-hint')).toBeHidden();
+  await expect(page.locator('.diag')).toHaveText('WebMCP: unavailable · Wrist: unavailable – no emg-wrist sensor');
+  await page.waitForTimeout(4200);
+  await expect(page.locator('.diag')).toBeVisible(); // stays with ?debug=1
+
+  await ready(page, './?wrist=0');
+  expect((await state(page)).wrist).toBe('off');
+  await expect(page.locator('.diag')).toContainText('Wrist: off');
+  await expect(page.locator('.diag')).toBeHidden({ timeout: 6000 }); // launch-only without ?debug=1
+  await page.goto('./?wrist=1'); // re-enable (the setting is remembered)
+});
+
+test('wrist twist opens search with a stand-in emg-wrist sensor (early frame flip ignored)', async ({ page }) => {
+  await page.addInitScript(() => {
+    type Reading = { quaternion: number[] | null; timestamp: number; onreading: (() => void) | null; onerror: unknown };
+    const sensors: Reading[] = [];
+    class FakeWrist {
+      quaternion: number[] | null = null;
+      timestamp = 0;
+      onreading: (() => void) | null = null;
+      onerror: unknown = null;
+      options: unknown;
+      constructor(options: unknown) {
+        this.options = options;
+        sensors.push(this);
+      }
+      start() {}
+      stop() {}
+    }
+    // The marker lands after load, as on the glasses.
+    setTimeout(() => {
+      Object.defineProperty(window, 'RelativeOrientationSensor', { value: Object.assign(FakeWrist, { __imuQuatWrapped: true }), configurable: true });
+    }, 300);
+    let t = 0;
+    (window as unknown as { __wrist: unknown }).__wrist = {
+      get options() {
+        return (sensors.at(-1) as unknown as { options: unknown } | undefined)?.options;
+      },
+      /** Feeds twist angles (deg) at 50 Hz as w-first quaternions. */
+      emit(angles: number[]) {
+        const s = sensors.at(-1);
+        if (!s) return false;
+        for (const deg of angles) {
+          const h = (deg * Math.PI) / 360;
+          s.quaternion = [Math.cos(h), 0, Math.sin(h), 0];
+          s.timestamp = t += 20;
+          s.onreading?.();
+        }
+        return true;
+      },
+    };
+  });
+  await ready(page, './?wrist=1');
+  await watchActivation(page);
+  await expect.poll(async () => (await state(page)).wrist).toBe('starting');
+  const emit = (angles: number[]) => page.evaluate((a) => (window as unknown as { __wrist: { emit: (a: number[]) => boolean } }).__wrist.emit(a), angles);
+  expect(await page.evaluate(() => (window as unknown as { __wrist: { options: unknown } }).__wrist.options)).toEqual({ sensorId: 'emg-wrist' });
+  const hold = (deg: number, n: number) => Array.from({ length: n }, () => deg);
+  const ramp = (a: number, b: number, n: number) => Array.from({ length: n }, (_, i) => a + ((b - a) * (i + 1)) / n);
+  // Settling with an early sign flip: no reference, no trigger.
+  await emit([...hold(25, 20), ...hold(-25, 20), ...ramp(-25, 60, 10), ...ramp(60, -25, 10)]);
+  expect((await state(page)).wrist).toBe('settling');
+  expect(await activations(page)).toBe(0);
+  await emit(hold(-25, 60));
+  expect((await state(page)).wrist).toBe('on');
+  await expect(page.locator('.wrist-hint')).toBeVisible();
+
+  // Open the viewer, then twist: the viewer closes and the composer opens.
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await state(page)).viewer).not.toBeNull();
+  await emit([...ramp(-25, 40, 15), ...ramp(40, -25, 15)]);
+  await expect.poll(async () => (await state(page)).viewer).toBeNull();
+  await expect.poll(async () => (await activeLabel(page)).id).toBe('search-input');
+  expect(await activations(page)).toBe(1);
+  // Cooldown + field already focused: nothing more.
+  await emit([...ramp(-25, 40, 15), ...ramp(40, -25, 15)]);
+  expect(await activations(page)).toBe(1);
+  await compose(page, 'ocean');
+  await expect.poll(async () => (await state(page)).mode).toBe('results');
 });
