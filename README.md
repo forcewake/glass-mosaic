@@ -15,6 +15,10 @@ and no hosted inference.
 | --- | --- | --- |
 | ![Mosaic](docs/screens/mosaic.png) | ![Search results for mountains](docs/screens/search-mountains.png) | ![Viewer](docs/screens/viewer.png) |
 
+| Viewer: Search button | Results: New search |
+| --- | --- |
+| ![Viewer with the Search button focused](docs/screens/viewer-search.png) | ![New search button at the end of the results](docs/screens/results-new-search.png) |
+
 The screenshots are from headless Chromium at 600 × 600, driven only by arrow
 keys and Enter (`npm run test:e2e`). On the glasses, black is transparent.
 
@@ -25,12 +29,36 @@ keys and Enter (`npm run test:e2e`). On the glasses, black is transparent.
 | Mosaic | ← → ↑ ↓ | Move focus to the neighbouring card. The camera pans to follow, without end left, right and down. |
 | Mosaic | Enter | Open the focused card in the viewer. |
 | Mosaic, top row | ↑ | Go to the search field. |
+| Anywhere | ↑ ↑ (twice within 350 ms) | Jump to the search field and open the composer. The first ↑ still moves normally; only the second is consumed. Not from the field itself. |
 | Search field | Enter / select | Opens the system composer (handwriting, dictation, keyboard). Committed text searches. |
 | Search field | ↓ | Back to the mosaic. → at the end of the text reaches **Clear**. |
 | Viewer | ← → | Previous / next result (or neighbouring card while browsing). |
 | Viewer | Enter | Play / pause video and sound. |
-| Viewer | ↓ | The button row: Prev · Play · Close · Next. |
+| Viewer | ↓ | The button row: Prev · **Search** · Play · Close · Next. Search is one ← from where ↓ lands; it closes the viewer (via history, like Close) and opens the composer. |
+| Results, bottom row | ↓ | **New search** button (bottom right). Enter opens the composer; ↑ returns to the cards. |
+| Anywhere (experimental) | Wrist twist ≥ 50° and back (Meta Neural Band) | Opens search. See below. |
 | Anywhere | Back (system) | Closes the viewer, then clears the search, then leaves the app. |
+
+Every "open search" path does the same thing: close the viewer if it is open,
+focus the semantic `<input type="search">` and activate it (`click()`), which
+is what opens the system composer. Committed text comes back through `input`
+and `change` only, and both run the search.
+
+**Wrist twist (experimental).** On glasses whose runtime exposes the Meta
+Neural Band as `RelativeOrientationSensor({ sensorId: 'emg-wrist' })`
+([Wrist orientation docs](https://wearables.developer.meta.com/docs/develop/webapps/build/wrist/)),
+a quick forearm twist of at least 50° in either direction and back within
+1.2 s opens search. Hysteresis: it fires on the return under 20°; cooldown
+1.5 s. Roll is measured as an offset from a reference captured only after the
+readings are stable for 1 s (after a 1 s warm-up), so the early frame flip
+while the runtime learns the wrist is ignored. The reference follows slow drift
+and re-captures after a held posture change. Detection uses the runtime's
+`__imuQuatWrapped` marker, as the docs require, so desktop Chromium's own
+`RelativeOrientationSensor` is never used. It is on by default only when that
+sensor exists; `?wrist=0` turns it off (remembered), `?wrist=1` turns it back
+on. A small dim "⟲ twist: search" hint shows while it is active. The sensor is
+stopped while the page is hidden. Tunables are in `src/app/wrist.ts`
+(`WRIST_DEFAULTS`) and `src/app/doubletap.ts` (`DOUBLE_ARROW_UP_MS`).
 
 The app uses browser history for Back, as the docs recommend: opening the
 viewer and committing a search each add one entry (at most 3 in total, under
@@ -62,6 +90,8 @@ Useful URL parameters:
 | --- | --- |
 | `?reduced=1` | Reduced mode: no live video previews, no camera easing, DPR 1, fewer results. Also turns on with `prefers-reduced-motion`, or by itself when frames are consistently slow. `?reduced=0` forces it off. |
 | `?render=dom` | DOM fallback with plain images instead of WebGL. Also used automatically when WebGL2 is missing or the context is lost. |
+| `?wrist=0` / `?wrist=1` | Turn the experimental wrist-twist gesture off / on (remembered in `localStorage`). |
+| `?debug=1` | Keep the diagnostics line visible: `WebMCP: unavailable` or `WebMCP: N tools` (from `document.modelContext.getTools()`, plus any registration errors) and `Wrist: on / off / unavailable`. Without it the line shows for about 4 s at launch. |
 | `?seed=42` / `?seed=math` | Shuffle seed for the mosaic order. The default is fixed so screenshots are reproducible. |
 
 ### Checks
@@ -69,7 +99,7 @@ Useful URL parameters:
 ```bash
 npm run typecheck
 npm run lint
-npm test               # Vitest: ranker, text/stemming, fuzzy, synonyms, indexer, catalog, layout, neighbours, WebMCP
+npm test               # Vitest: ranker, text/stemming, fuzzy, synonyms, indexer, catalog, layout, neighbours, WebMCP, double-↑, wrist roll
 npx playwright install chromium   # once
 npm run test:e2e       # Playwright at 600x600, arrows + Enter only (needs network for Wikimedia media)
 npm run verify         # all of the above
@@ -315,7 +345,17 @@ audio.
   Arrows behave the same with and without Chromium spatial navigation, but the
   real device's focus rules should still be checked by hand.
 - **WebMCP** is beta, off by default, and only feature-detected; it was tested
-  against a stand-in, not the real runtime.
+  against a stand-in, not the real runtime. If "Hey Meta, search the mosaic…"
+  does nothing, open the app with `?debug=1`: `WebMCP: unavailable` means
+  `document.modelContext` is missing (WebMCP is not enabled on the device:
+  Developer Mode or rollout, then restart the glasses and the Meta AI app).
+  `getTools()` only reflects this page's registry, not what the assistant sees.
+- **Wrist twist** is experimental and was tested only with a stand-in sensor.
+  Thresholds, the stream rate, how the sensor permission prompt looks at
+  launch, battery cost of continuous streaming, and whether a programmatic
+  `click()` from a sensor event (no user activation) opens the composer are
+  unverified on hardware. If it does not, the field is still focused and Enter
+  opens the composer.
 
 ## Licensing
 
