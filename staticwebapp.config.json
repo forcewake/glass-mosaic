@@ -1,0 +1,16 @@
+{
+  "mimeTypes": {
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".glsl": "text/plain"
+  },
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer"
+  },
+  "routes": [
+    { "route": "/.well-known/*", "headers": { "Cache-Control": "public, max-age=300" } },
+    { "route": "/data/*", "headers": { "Cache-Control": "public, max-age=3600" } },
+    { "route": "/assets/*", "headers": { "Cache-Control": "public, max-age=31536000, immutable" } }
+  ]
+}
