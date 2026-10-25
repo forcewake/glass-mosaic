@@ -91,7 +91,7 @@ Useful URL parameters:
 | `?reduced=1` | Reduced mode: no live video previews, no camera easing, DPR 1, fewer results. Also turns on with `prefers-reduced-motion`, or by itself when frames are consistently slow. `?reduced=0` forces it off. |
 | `?render=dom` | DOM fallback with plain images instead of WebGL. Also used automatically when WebGL2 is missing or the context is lost. |
 | `?wrist=0` / `?wrist=1` | Turn the experimental wrist-twist gesture off / on (remembered in `localStorage`). |
-| `?debug=1` | Keep the diagnostics line visible: `WebMCP: unavailable` or `WebMCP: N tools` (from `document.modelContext.getTools()`, plus any registration errors) and `Wrist: on / off / unavailable`. Without it the line shows for about 4 s at launch. |
+| `?debug=1` | Keep the diagnostics line visible: `WebMCP: unavailable` or `WebMCP: N tools` (from `document.modelContext.getTools()`, plus any registration errors) and `Wrist: on / off / unavailable`; with `?debug=1` it also lists the tool names. Without it the line shows for about 4 s at launch. |
 | `?seed=42` / `?seed=math` | Shuffle seed for the mosaic order. The default is fixed so screenshots are reproducible. |
 
 ### Checks
@@ -217,25 +217,46 @@ Typing previews results after 250 ms without moving focus. A committed query
 > rollout and is **off by default**. The glasses decide at launch whether a page
 > may offer tools. The API may change.
 
-When `document.modelContext` exists, the app registers five tools right at
+When `document.modelContext` exists, the app registers six tools right at
 launch, before the catalog loads, because eligibility is decided when the app
-launches. Until the mosaic is ready, a call fails with a short "still loading"
-error. Without `document.modelContext`, nothing happens.
+launches. Until the mosaic is ready, a call returns a short "still loading"
+result. Without `document.modelContext`, nothing happens.
 
-| Tool | Input | Effect |
-| --- | --- | --- |
-| `search_mosaic` | `{ query: string }` | Runs the same search as the field and returns the count and the top 5 titles with positions. |
-| `open_item` | `{ position?: number }` | Opens result *n* (1-based), or the focused card if no position is given. |
-| `next_item` / `previous_item` | none | Steps in the viewer, or moves focus in the mosaic. |
-| `close_viewer` | none | Closes the viewer. |
+| Tool | Input | Annotations | Effect |
+| --- | --- | --- | --- |
+| `mosaic_get_state` | none | `readOnlyHint`, `idempotentHint` | Reads the screen (`mosaic` / `results` / `viewer`), the current query and match count, and the focused or open item's title, type and position. Registered first. |
+| `mosaic_search` | `{ query: string }` | `idempotentHint` | "show me X", "find X", "search for X in the mosaic": runs the same search as the field and returns the count and the top 5 titles with positions. |
+| `mosaic_open_item` | `{ position?: number }` | | Opens result *n* (1-based), or the focused card if no position is given. |
+| `mosaic_next_item` / `mosaic_previous_item` | none | | Steps in the viewer, or moves focus in the mosaic. |
+| `mosaic_close_viewer` | none | `idempotentHint` | Closes the viewer. |
 
-The tools return catalog text that comes from Commons contributors, so they set
-`untrustedContentHint` and sanitize the text. Invalid input throws, while
-expected situations (no matches, a position out of range) return
-`{ error, next_action }`. Every tool works on every screen, so none has to be
-unregistered when the view changes. The docs do not show how to unregister
-with a signal, so the app does not do it. Disable the tools by removing the
-`registerAgentTools` call in `src/app/main.ts`.
+The setup copies Meta's official samples,
+[facebook/meta_glasses_webmcp](https://github.com/facebook/meta_glasses_webmcp)
+(`examples/todo`, `examples/market`), and the
+[`ai-glasses-webapp-webmcp` skill](https://github.com/facebook/meta-wearables-webapp/blob/main/plugins/meta-wearables-webapp/skills/ai-glasses-webapp-webmcp/SKILL.md):
+
+- **Instruction in the document head.** `<title>` carries the standing rule
+  ("Glass Mosaic — Always act with a mosaic_* tool: … Never answer with a
+  description of what you would do."), and `src/app/title.ts` appends the live
+  screen on every screen change, like the Todo sample's `view.ts`.
+  `<meta name="description">` repeats the guidance, like the Market sample. The
+  visible UI does not change, and the launcher name still comes from
+  `.well-known/meta-wearables-manifest.json`.
+- **Persona file.** `public/llms.txt` (with the same text in `public/agent.md`)
+  describes the screens, the tools and example phrases.
+- **Results Meta AI can steer on.** Every result is JSON with a `next_action`.
+  Handled conditions (no matches, a position out of range, still loading) come
+  back as `{ error: true, message, next_action }` rather than as a thrown error
+  or an `isError` flag, which the skill says is dropped.
+- **Guarded registration.** One `safeRegister` call per tool copes with a
+  synchronous throw and with a promise, a handle or nothing as the return value.
+  Only scalar parameters are used. There is no `untrustedContentHint`, since the
+  samples use only `readOnlyHint` / `idempotentHint`; catalog titles are still
+  sanitized.
+
+Every tool works on every screen, so none has to be unregistered when the view
+changes. With `?debug=1` the diagnostics line lists the registered tool names.
+To disable the tools, remove the `registerAgentTools` call in `src/app/main.ts`.
 
 ## What came from embed-anything, and what did not
 
@@ -350,6 +371,10 @@ audio.
   `document.modelContext` is missing (WebMCP is not enabled on the device:
   Developer Mode or rollout, then restart the glasses and the Meta AI app).
   `getTools()` only reflects this page's registry, not what the assistant sees.
+  `WebMCP: 6 tools` with Meta AI still never calling them matches the open
+  [meta-wearables-webapp#31](https://github.com/facebook/meta-wearables-webapp/issues/31),
+  where even the official Todo sample was not invoked. That suggests a
+  platform-side cause that this app cannot fix.
 - **Wrist twist** is experimental and was tested only with a stand-in sensor.
   Thresholds, the stream rate, how the sensor permission prompt looks at
   launch, battery cost of continuous streaming, and whether a programmatic

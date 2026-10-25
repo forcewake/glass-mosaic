@@ -253,42 +253,69 @@ test('layout fits the 600x600 display with readable text', async ({ page }) => {
 
 test('WebMCP tools (beta) drive the same app state when the API exists', async ({ page }) => {
   // Stand-in for the Dev Mode `document.modelContext`; the real API is off by default.
+  // registerTool returns nothing (a non-thenable), as some builds do (Meta skill).
   await page.addInitScript(() => {
-    const tools = new Map<string, { execute: (input: unknown, options: { signal: AbortSignal }) => Promise<unknown> }>();
+    const tools = new Map<string, { name: string; execute: (input: unknown, options: { signal: AbortSignal }) => Promise<string> }>();
     Object.defineProperty(document, 'modelContext', {
       value: {
-        registerTool: async (tool: { name: string; execute: (input: unknown, options: { signal: AbortSignal }) => Promise<unknown> }) => {
+        registerTool: (tool: { name: string; execute: (input: unknown, options: { signal: AbortSignal }) => Promise<string> }) => {
+          if (tools.has(tool.name)) throw new DOMException('duplicate', 'InvalidStateError');
           tools.set(tool.name, tool);
         },
+        getTools: async () => [...tools.values()].map((t) => ({ name: t.name })),
       },
     });
     (window as unknown as { __tools: typeof tools }).__tools = tools;
   });
-  await ready(page);
-  const call = (name: string, input: unknown = {}) =>
-    page.evaluate(
-      ([n, i]) =>
-        (window as unknown as { __tools: Map<string, { execute: (input: unknown, o: { signal: AbortSignal }) => Promise<unknown> }> }).__tools
-          .get(n as string)!
-          .execute(i, { signal: new AbortController().signal }),
-      [name, input] as const,
-    );
-  expect(await page.evaluate(() => [...(window as unknown as { __tools: Map<string, unknown> }).__tools.keys()])).toEqual([
-    'search_mosaic', 'open_item', 'next_item', 'previous_item', 'close_viewer',
-  ]);
-  const found = JSON.stringify(await call('search_mosaic', { query: 'mountains' }));
-  expect(found).toMatch(/Found \d+ matches/);
+  await ready(page, './?debug=1');
+  const call = async (name: string, input: unknown = {}) =>
+    JSON.parse(
+      await page.evaluate(
+        ([n, i]) =>
+          (window as unknown as { __tools: Map<string, { execute: (input: unknown, o: { signal: AbortSignal }) => Promise<string> }> }).__tools
+            .get(n as string)!
+            .execute(i, { signal: new AbortController().signal }),
+        [name, input] as const,
+      ),
+    ) as Record<string, unknown>;
+  const names = [
+    'mosaic_get_state', 'mosaic_search', 'mosaic_open_item', 'mosaic_next_item', 'mosaic_previous_item', 'mosaic_close_viewer',
+  ];
+  expect(await page.evaluate(() => [...(window as unknown as { __tools: Map<string, unknown> }).__tools.keys()])).toEqual(names);
+  await expect(page.locator('.diag')).toContainText(`WebMCP: 6 tools (${names.join(', ')})`);
+  await expect(page).toHaveTitle(/^Glass Mosaic — Always act with a mosaic_\* tool: .* Live screen: mosaic\.$/);
+  expect(await call('mosaic_get_state')).toMatchObject({ mode: 'mosaic', query: null, matches: 0 });
+
+  const found = await call('mosaic_search', { query: 'mountains' });
+  expect(found.matches).toBeGreaterThan(2);
+  expect(found.next_action).toBeTruthy();
   expect((await state(page)).mode).toBe('results');
-  await call('open_item', { position: 2 });
+  await expect(page).toHaveTitle(/Live screen: results for "mountains" \(\d+ matches\)\.$/);
+  expect(await call('mosaic_get_state')).toMatchObject({ mode: 'results', query: 'mountains', item: { position: expect.stringMatching(/^1 of \d+$/) } });
+
+  expect(await call('mosaic_open_item', { position: 2 })).toMatchObject({ mode: 'viewer', item: { position: expect.stringMatching(/^2 of /) } });
   await expect(page.locator('.viewer-position')).toHaveText(/^2 of \d+$/);
-  await call('next_item');
+  await expect(page).toHaveTitle(/Live screen: viewer, ".*" \(\w+, 2 of \d+\)\.$/);
+  await call('mosaic_next_item');
   await expect(page.locator('.viewer-position')).toHaveText(/^3 of \d+$/);
-  await call('previous_item');
+  await expect(page).toHaveTitle(/Live screen: viewer, .*3 of \d+\)\.$/);
+  expect(await call('mosaic_get_state')).toMatchObject({ mode: 'viewer', item: { position: expect.stringMatching(/^3 of /) } });
+  await call('mosaic_previous_item');
   await expect(page.locator('.viewer-position')).toHaveText(/^2 of \d+$/);
-  await call('close_viewer');
+  expect(await call('mosaic_close_viewer')).toMatchObject({ closed: true, mode: 'results' });
   await expect.poll(async () => (await state(page)).viewer).toBeNull();
-  expect(JSON.stringify(await call('open_item', { position: 9999 }))).toContain('not_found');
+  await expect(page).toHaveTitle(/Live screen: results for "mountains"/);
+  expect(await call('mosaic_open_item', { position: 9999 })).toMatchObject({ error: true, message: 'not found' });
+  expect(await call('mosaic_search', { query: '' })).toMatchObject({ error: true });
   expect(await page.evaluate(() => history.length)).toBeLessThanOrEqual(5);
+});
+
+test('ships the agent persona files', async ({ page }) => {
+  for (const file of ['llms.txt', 'agent.md']) {
+    const res = await page.request.get(`./${file}`);
+    expect(res.ok()).toBe(true);
+    expect(await res.text()).toContain('mosaic_search');
+  }
 });
 
 // ------------------------------------------------------------------ quick search access

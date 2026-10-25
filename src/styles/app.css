@@ -207,6 +207,11 @@ input {
 .diag.above-hint {
   bottom: 40px;
 }
+/* ?debug=1: wrap instead of truncating, so every tool name is readable. */
+.diag.debug {
+  white-space: normal;
+  line-height: 1.25;
+}
 
 /* ------------------------------------------------------------ field */
 

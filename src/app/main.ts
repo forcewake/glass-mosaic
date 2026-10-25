@@ -15,7 +15,8 @@ import { GlassField, type Instance } from '../engine/GlassField';
 import { MediaPool } from '../engine/MediaPool';
 import { Toolbar } from './toolbar';
 import { Viewer, type ViewerContext } from './viewer';
-import { registerAgentTools, webmcpStatus, type AgentApi } from './webmcp';
+import { AgentNotReady, registerAgentTools, webmcpStatus, type AgentApi, type AgentState } from './webmcp';
+import { liveTitle } from './title';
 import { installDoubleArrowUp } from './doubletap';
 import { WristGesture, type WristStatus } from './wrist';
 
@@ -52,10 +53,11 @@ const app = document.getElementById('app')!;
 // The tools forward to the real implementation once the app is ready.
 let agentImpl: AgentApi | null = null;
 const ready = (): AgentApi => {
-  if (!agentImpl) throw new Error('Glass Mosaic is still loading. Try again in a moment.');
+  if (!agentImpl) throw new AgentNotReady('Glass Mosaic is still loading. Try again in a moment.');
   return agentImpl;
 };
 const agentRegistration = registerAgentTools({
+  state: () => ready().state(),
   search: (query) => ready().search(query),
   open: (position) => ready().open(position),
   step: (delta) => ready().step(delta),
@@ -66,6 +68,7 @@ const agentRegistration = registerAgentTools({
 const diag = document.createElement('p');
 diag.className = 'diag';
 diag.setAttribute('role', 'status');
+if (debug) diag.classList.add('debug'); // full text, wrapped, so tool names are readable
 const diagParts = { webmcp: 'WebMCP: …', wrist: 'Wrist: …' };
 const renderDiag = () => {
   diag.textContent = `${diagParts.webmcp} · ${diagParts.wrist}`;
@@ -87,7 +90,7 @@ if (!debug) {
 }
 void agentRegistration
   .catch(() => 0)
-  .then(() => webmcpStatus())
+  .then(() => webmcpStatus(debug))
   .then((text) => {
     diagParts.webmcp = text;
     renderDiag();
@@ -299,6 +302,7 @@ async function start(): Promise<void> {
     } else if (!options.commit && result.hits.length) {
       history.replaceState({ gm: 'results', q: trimmed } satisfies HistoryState, '');
     }
+    updateTitle();
     return result;
   }
 
@@ -312,6 +316,7 @@ async function start(): Promise<void> {
     if (field.currentMode === 'results') field.showBrowse();
     if (!fromHistory && (history.state as HistoryState)?.gm === 'results') history.back();
     if (!hadFocus) toolbar.focus();
+    updateTitle();
   }
 
   // ---------------------------------------------------------------- viewer
@@ -331,6 +336,7 @@ async function start(): Promise<void> {
     resultsSearch.inert = true;
     viewer.open(contextFor(instance));
     history.pushState({ gm: 'viewer', id: instance.item.id } satisfies HistoryState, '');
+    updateTitle();
   }
 
   function stepViewer(delta: 1 | -1): ViewerContext | null {
@@ -347,6 +353,7 @@ async function start(): Promise<void> {
     if ((history.state as HistoryState)?.gm === 'viewer') {
       history.replaceState({ gm: 'viewer', id: next.item.id } satisfies HistoryState, '');
     }
+    queueMicrotask(updateTitle);
     return contextFor(next);
   }
 
@@ -359,6 +366,7 @@ async function start(): Promise<void> {
     field.setActive(true);
     field.restoreFocus();
     if (!fromHistory && (history.state as HistoryState)?.gm === 'viewer') history.back();
+    updateTitle();
   }
 
   window.addEventListener('popstate', (event) => {
@@ -379,7 +387,28 @@ async function start(): Promise<void> {
 
   // ---------------------------------------------------------------- agent tools (BETA)
 
+  function agentState(): AgentState {
+    const mode = viewer.isOpen ? 'viewer' : field.currentMode === 'results' ? 'results' : 'mosaic';
+    const instance = field.focused;
+    const item = viewer.isOpen ? viewer.item : instance?.item ?? null;
+    const position =
+      field.currentMode === 'results' && instance ? `${instance.rank + 1} of ${field.resultCount}` : 'browsing the mosaic';
+    return {
+      mode,
+      query: field.currentMode === 'results' ? (lastResult?.query.trim() ?? committedQuery) : '',
+      matches: field.currentMode === 'results' ? field.resultCount : 0,
+      item: item ? { title: item.title, type: item.type, position } : null,
+    };
+  }
+
+  // Samples (todo/src/view.ts): the title keeps the standing rule and names
+  // the live screen, updated on every screen change.
+  function updateTitle(): void {
+    document.title = liveTitle(agentState());
+  }
+
   const agent: AgentApi = {
+    state: agentState,
     search(query) {
       toolbar.setQuery(query);
       if (viewer.isOpen) closeViewer(false);
@@ -399,12 +428,12 @@ async function start(): Promise<void> {
       let instance: Instance | null;
       if (position === null) instance = field.focused;
       else if (field.currentMode !== 'results') {
-        return { error: 'no_results', next_action: 'Call search_mosaic first, then open_item with a position.' };
+        return { error: 'no_results', next_action: 'Call mosaic_search first, then mosaic_open_item with a position.' };
       } else instance = field.instanceAtRank(position - 1);
       if (!instance) {
         return {
           error: 'not_found',
-          next_action: field.resultCount ? `Use a position from 1 to ${field.resultCount}.` : 'Call search_mosaic first.',
+          next_action: field.resultCount ? `Use a position from 1 to ${field.resultCount}.` : 'Call mosaic_search first.',
         };
       }
       if (viewer.isOpen) closeViewer(false);
@@ -434,6 +463,7 @@ async function start(): Promise<void> {
     },
   };
   agentImpl = agent;
+  updateTitle();
 
   // A small, read-only hook for tests and debugging.
   Object.defineProperty(window, 'glassMosaic', {

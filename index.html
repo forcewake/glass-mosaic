@@ -5,8 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#000000" />
-    <meta name="description" content="An almost infinite, mixed-media liquid-glass mosaic of Wikimedia Commons photos, videos and sounds, searched entirely in the browser. Made for Meta Ray-Ban Display." />
-    <title>Glass Mosaic</title>
+    <!--
+      Agent hosts read the title and description as context, so they carry the
+      standing instruction (pattern from facebook/meta_glasses_webmcp
+      examples/todo and examples/market). src/app/title.ts appends the live
+      screen at runtime and must keep TITLE_RULE equal to this title.
+      public/llms.txt (and the same text in public/agent.md) is the long-form
+      persona. The launcher name comes from .well-known/meta-wearables-manifest.json.
+    -->
+    <title>Glass Mosaic — Always act with a mosaic_* tool: mosaic_search for any request to show, find or search pictures, videos or sounds; mosaic_open_item, mosaic_next_item, mosaic_previous_item and mosaic_close_viewer to move around; mosaic_get_state to read what is on screen. Never answer with a description of what you would do.</title>
+    <meta
+      name="description"
+      content="Glass Mosaic is a mosaic of Wikimedia Commons photos, videos and sounds that the wearer is looking at. Every request to show, find or search for something (&quot;show me mountains&quot;, &quot;find ocean videos&quot;, &quot;search for rain sounds in the mosaic&quot;) is a mosaic_search call, never a web search or a spoken answer. Open, step through and close items with mosaic_open_item, mosaic_next_item, mosaic_previous_item and mosaic_close_viewer. Call mosaic_get_state when unsure what is on screen. The wearer watches the screen: confirm in one short sentence, never read results back."
+    />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   </head>
   <body>
