@@ -55,6 +55,8 @@ export interface FieldOptions {
   topInset: () => number;
   onOpen: (instance: Instance) => void;
   onExitUp: () => void;
+  /** Down with no card below (only happens at the bottom of the finite results spiral). */
+  onExitDown?: () => void;
   onFocusChange?: (instance: Instance | null) => void;
   /** Called once if frames are consistently slow, so the app can degrade. */
   onSlow?: () => void;
@@ -453,6 +455,7 @@ export class GlassField {
     if (this.focusKey !== node.instance.key) this.setFocus(node.instance);
     const next = this.move(dir);
     if (!next && dir === 'up') this.options.onExitUp();
+    else if (!next && dir === 'down') this.options.onExitDown?.();
   };
 
   private onClick = (event: MouseEvent) => {

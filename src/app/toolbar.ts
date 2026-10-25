@@ -95,6 +95,21 @@ export class Toolbar {
     this.input.focus({ preventScroll: true });
   }
 
+  /**
+   * Focuses the field and activates it, which is what opens the system
+   * composer on the glasses ("Activating a supported text field opens the
+   * system composer", Input and navigation docs). Committed text then comes
+   * back through the existing `input` / `change` listeners.
+   */
+  openComposer(): void {
+    this.focus();
+    this.input.click();
+  }
+
+  get hasFocus(): boolean {
+    return document.activeElement === this.input;
+  }
+
   /** Height covered at the top of the viewport, in CSS px. */
   get inset(): number {
     return this.element.offsetHeight + 8;

@@ -4,8 +4,10 @@
  * D-pad model, all on real focusable elements:
  *   stage (focused on open): Left/Right = previous/next, Enter = play/pause
  *     (audio, video), Down = the controls row;
- *   controls row: [Prev] [Play] [Close] [Next], ordinary buttons (native
- *     spatial navigation moves between them), Up = back to the stage.
+ *   controls row: [Prev] [Search] [Play] [Close] [Next], ordinary buttons
+ *     (native spatial navigation moves between them), Up = back to the stage.
+ *     Search sits one move to the left of where Down lands (Play, or Close
+ *     for images): it closes the viewer and opens the search composer.
  * The system Back gesture (history.back) and Escape close the viewer.
  */
 import type { MediaItem } from '../media/types';
@@ -23,6 +25,7 @@ export interface ViewerContext {
 export interface ViewerCallbacks {
   onStep: (delta: 1 | -1) => ViewerContext | null;
   onClose: () => void;
+  onSearch: () => void;
 }
 
 export class Viewer {
@@ -58,11 +61,12 @@ export class Viewer {
       </div>
       <div class="viewer-controls" role="toolbar" aria-label="Viewer controls">
         <button type="button" data-action="prev" aria-label="Previous item">‹ Prev</button>
+        <button type="button" data-action="search" aria-label="New search">Search</button>
         <button type="button" data-action="play">Play</button>
         <button type="button" data-action="close">Close</button>
         <button type="button" data-action="next" aria-label="Next item">Next ›</button>
       </div>
-      <p class="viewer-help" id="viewer-help"><span class="viewer-position"></span><span>←→ next · ↓ buttons · Back</span></p>`;
+      <p class="viewer-help" id="viewer-help"><span class="viewer-position"></span><span>←→ next · ↓ buttons · ↑↑ search</span></p>`;
     host.append(el);
     this.element = el;
     this.stage = el.querySelector('.viewer-stage')!;
@@ -292,5 +296,6 @@ export class Viewer {
     else if (action === 'next') this.step(1);
     else if (action === 'play') this.togglePlay();
     else if (action === 'close') this.callbacks.onClose();
+    else if (action === 'search') this.callbacks.onSearch();
   };
 }

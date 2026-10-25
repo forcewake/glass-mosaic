@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { agentToolDefinitions, registerAgentTools, type AgentApi } from '../src/app/webmcp';
+import { agentToolDefinitions, registerAgentTools, webmcpStatus, type AgentApi } from '../src/app/webmcp';
 
 const RESERVED = ['openUrl', 'goBack', 'goForward', 'reload', 'getCurrentUrl', 'getPageTitle', 'getPageText'];
 
@@ -90,5 +90,31 @@ describe('WebMCP registration', () => {
     expect(await registerAgentTools(api())).toBe(5);
     expect(registerTool).toHaveBeenCalledTimes(5);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WebMCP diagnostics', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('says unavailable without document.modelContext', async () => {
+    vi.stubGlobal('document', {});
+    expect(await webmcpStatus()).toBe('WebMCP: unavailable');
+  });
+
+  it('counts tools with getTools() and lists registration errors', async () => {
+    const registered: string[] = [];
+    vi.stubGlobal('document', {
+      modelContext: {
+        registerTool: async (tool: { name: string }) => {
+          if (tool.name === 'open_item') throw new DOMException('dup', 'InvalidStateError');
+          registered.push(tool.name);
+        },
+        getTools: async () => registered.map((name) => ({ name })),
+      },
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await registerAgentTools(api());
+    const text = await webmcpStatus();
+    expect(text).toMatch(/^WebMCP: 4 tools · \d+ failed: .*open_item: InvalidStateError/);
   });
 });

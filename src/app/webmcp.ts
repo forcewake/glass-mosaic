@@ -33,7 +33,13 @@ interface ToolDefinition {
 
 interface ModelContextLike {
   registerTool: (tool: ToolDefinition) => Promise<void> | void;
+  /** Docs ("Listing your tools"): resolves to the tools this document registered. */
+  getTools?: () => Promise<unknown[]> | unknown[];
 }
+
+/** Registration failures of this session, for the `?debug=1` diagnostics. */
+export const registrationErrors: string[] = [];
+let registeredCount = 0;
 
 const clean = (text: string) => text.replace(/[\p{Cc}<>`]/gu, ' ').slice(0, 90);
 
@@ -128,10 +134,37 @@ export async function registerAgentTools(api: AgentApi): Promise<number> {
     tools.map(async (tool) => {
       try {
         await context.registerTool(tool);
+        registeredCount++;
       } catch (error) {
+        registrationErrors.push(`${tool.name}: ${(error as Error)?.name ?? 'Error'}`);
         console.warn(`[webmcp] ${tool.name} was not registered`, error);
       }
     }),
   );
   return tools.length;
+}
+
+/**
+ * One-line WebMCP diagnostic for the debug status: "WebMCP: unavailable" when
+ * `document.modelContext` is undefined (WebMCP not enabled on this device, or
+ * not running as a Web App), else "WebMCP: N tools" from `getTools()`, plus
+ * any registration errors. Per the docs, `getTools()` reflects the page's own
+ * registry only; it does not prove that Meta AI can see the tools.
+ */
+export async function webmcpStatus(): Promise<string> {
+  const context = (document as Document & { modelContext?: ModelContextLike }).modelContext;
+  if (!context) return 'WebMCP: unavailable';
+  let text: string;
+  if (typeof context.getTools === 'function') {
+    try {
+      const tools = await context.getTools();
+      text = `WebMCP: ${Array.isArray(tools) ? tools.length : '?'} tools`;
+    } catch (error) {
+      text = `WebMCP: getTools failed (${(error as Error)?.name ?? 'Error'})`;
+    }
+  } else {
+    text = `WebMCP: ${registeredCount} registered (no getTools)`;
+  }
+  if (registrationErrors.length) text += ` · ${registrationErrors.length} failed: ${registrationErrors.join(', ')}`;
+  return text;
 }

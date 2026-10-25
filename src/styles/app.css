@@ -144,6 +144,70 @@ input {
   text-overflow: ellipsis;
 }
 
+/* ------------------------------------------------------------ search shortcuts and status */
+
+/* "New search" at the end of the results (Down from the bottom row), bottom right. */
+.results-search {
+  position: absolute;
+  z-index: 3;
+  bottom: 10px;
+  right: 10px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  border: 1px solid #3c5057;
+  background: var(--surface-raised);
+  font-size: 17px;
+}
+.results-search[hidden] {
+  display: none;
+}
+
+/* Tiny, dim, non-interactive: black is transparent on the glasses. */
+.wrist-hint,
+.diag {
+  position: absolute;
+  z-index: 4;
+  left: 10px;
+  margin: 0;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #8fa4aa;
+  font-size: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+  max-width: calc(100% - 20px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wrist-hint {
+  bottom: 8px;
+  opacity: 0.7;
+}
+.wrist-hint[hidden] {
+  display: none;
+}
+.wrist-hint.is-armed {
+  color: var(--accent);
+  opacity: 1;
+}
+.wrist-hint.is-fired {
+  animation: wrist-fired 600ms ease-out;
+}
+@keyframes wrist-fired {
+  0% {
+    color: var(--accent-strong);
+    opacity: 1;
+  }
+}
+.diag {
+  bottom: 8px;
+}
+.diag.above-hint {
+  bottom: 40px;
+}
+
 /* ------------------------------------------------------------ field */
 
 .field-host,
@@ -229,6 +293,9 @@ input {
   background: var(--surface);
   border: 1px solid rgba(138, 217, 238, 0.22);
   pointer-events: none;
+}
+.card-caption[hidden] {
+  display: none;
 }
 .card-caption strong {
   font-size: 17px;

@@ -15,7 +15,9 @@ import { GlassField, type Instance } from '../engine/GlassField';
 import { MediaPool } from '../engine/MediaPool';
 import { Toolbar } from './toolbar';
 import { Viewer, type ViewerContext } from './viewer';
-import { registerAgentTools, type AgentApi } from './webmcp';
+import { registerAgentTools, webmcpStatus, type AgentApi } from './webmcp';
+import { installDoubleArrowUp } from './doubletap';
+import { WristGesture, type WristStatus } from './wrist';
 
 type HistoryState = { gm: 'results'; q: string } | { gm: 'viewer'; id: string } | null;
 
@@ -23,6 +25,25 @@ const params = new URLSearchParams(location.search);
 const prefersReducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let reduced = params.get('reduced') === '1' || (params.get('reduced') !== '0' && prefersReducedMotion);
 const forceDom = params.get('render') === 'dom';
+const debug = params.get('debug') === '1';
+// Experimental wrist twist: on by default when the band's sensor exists;
+// `?wrist=0` turns it off (remembered), `?wrist=1` turns it back on.
+const WRIST_KEY = 'glass-mosaic:wrist';
+if (params.has('wrist')) {
+  try {
+    localStorage.setItem(WRIST_KEY, params.get('wrist') === '0' ? '0' : '1');
+  } catch {
+    // storage may be unavailable
+  }
+}
+const wristEnabled = (() => {
+  if (params.has('wrist')) return params.get('wrist') !== '0';
+  try {
+    return localStorage.getItem(WRIST_KEY) !== '0';
+  } catch {
+    return true;
+  }
+})();
 
 const app = document.getElementById('app')!;
 
@@ -34,12 +55,44 @@ const ready = (): AgentApi => {
   if (!agentImpl) throw new Error('Glass Mosaic is still loading. Try again in a moment.');
   return agentImpl;
 };
-void registerAgentTools({
+const agentRegistration = registerAgentTools({
   search: (query) => ready().search(query),
   open: (position) => ready().open(position),
   step: (delta) => ready().step(delta),
   close: () => ready().close(),
 });
+
+// Diagnostics: always for ~4 s at launch, permanently with `?debug=1`.
+const diag = document.createElement('p');
+diag.className = 'diag';
+diag.setAttribute('role', 'status');
+const diagParts = { webmcp: 'WebMCP: …', wrist: 'Wrist: …' };
+const renderDiag = () => {
+  diag.textContent = `${diagParts.webmcp} · ${diagParts.wrist}`;
+};
+renderDiag();
+app.append(diag);
+// Without ?debug=1: hide after 4 s, or as soon as the wrist check has
+// resolved after that (the sensor marker can take a few seconds), at most 8 s.
+const launchedAt = performance.now();
+let diagResolved = false;
+const maybeHideDiag = () => {
+  const age = performance.now() - launchedAt;
+  if (debug || !diag.isConnected) return;
+  if ((age >= 4000 && diagResolved) || age >= 8000) diag.remove();
+};
+if (!debug) {
+  window.setTimeout(maybeHideDiag, 4000);
+  window.setTimeout(maybeHideDiag, 8000);
+}
+void agentRegistration
+  .catch(() => 0)
+  .then(() => webmcpStatus())
+  .then((text) => {
+    diagParts.webmcp = text;
+    renderDiag();
+  });
+
 const fieldHost = document.createElement('main');
 fieldHost.className = 'field-host';
 fieldHost.setAttribute('aria-label', 'Mosaic');
@@ -95,7 +148,7 @@ async function start(): Promise<void> {
 
   let lastResult: SearchResult | null = null;
   let committedQuery = '';
-  const idleStatus = () => `${items.length} items · Wikimedia Commons · ↑↓←→ ⏎`;
+  const idleStatus = () => `${items.length} items · Wikimedia Commons · ↑↓←→ ⏎ · ↑↑ search`;
 
   const toolbar = new Toolbar(app, {
     onPreview: (query) => runSearch(query, { commit: false, focus: false }),
@@ -113,12 +166,90 @@ async function start(): Promise<void> {
     topInset: () => toolbar.inset,
     onOpen: (instance) => openViewer(instance),
     onExitUp: () => toolbar.focus(),
+    onExitDown: () => {
+      if (resultsSearch.hidden) return;
+      resultsSearch.focus({ preventScroll: true });
+    },
     onSlow: () => setReduced(true),
   });
 
   const viewer = new Viewer(app, {
     onStep: (delta) => stepViewer(delta),
     onClose: () => closeViewer(false),
+    onSearch: () => openSearch(),
+  });
+
+  // "New search" at the end of the results: Down from the bottom row of the
+  // spiral lands on it, Up goes back to the cards. A real <button>, so
+  // spatial navigation and Enter work as usual.
+  const resultsSearch = document.createElement('button');
+  resultsSearch.type = 'button';
+  resultsSearch.className = 'results-search';
+  resultsSearch.textContent = 'New search';
+  resultsSearch.hidden = true;
+  resultsSearch.addEventListener('click', () => openSearch());
+  resultsSearch.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      field.restoreFocusOrEntry();
+    }
+  });
+  app.append(resultsSearch);
+
+  function setHasResults(has: boolean): void {
+    toolbar.setHasResults(has);
+    resultsSearch.hidden = !has;
+  }
+
+  /** Every "open search" path: closes the viewer (through history, as Close does), then focuses + activates the field. */
+  function openSearch(): void {
+    if (viewer.isOpen) closeViewer(false);
+    toolbar.openComposer();
+  }
+
+  // Double ArrowUp from anywhere → search. Not from the field itself.
+  installDoubleArrowUp({
+    isBlocked: () => toolbar.hasFocus,
+    onDoubleTap: () => openSearch(),
+  });
+
+  // Experimental wrist twist → search (see wrist.ts). Silent when absent.
+  const wristHint = document.createElement('p');
+  wristHint.className = 'wrist-hint';
+  wristHint.hidden = true;
+  wristHint.setAttribute('aria-hidden', 'true');
+  wristHint.textContent = '⟲ twist: search';
+  app.append(wristHint);
+  const wristLabel: Record<WristStatus, string> = {
+    checking: 'checking…',
+    unavailable: 'unavailable',
+    off: 'off',
+    starting: 'on (starting)',
+    settling: 'on (settling)',
+    on: 'on',
+    denied: 'off (permission denied)',
+    error: 'off (error)',
+  };
+  const wrist = new WristGesture({
+    enabled: wristEnabled,
+    onStatus: (status, detail) => {
+      wristHint.hidden = status !== 'on';
+      diagParts.wrist = `Wrist: ${wristLabel[status]}${debug && detail ? ` – ${detail}` : ''}`;
+      diag.classList.toggle('above-hint', status === 'on');
+      renderDiag();
+      if (status !== 'checking') {
+        diagResolved = true;
+        maybeHideDiag();
+      }
+    },
+    onPhase: (update) => wristHint.classList.toggle('is-armed', update.phase === 'armed'),
+    onTrigger: () => {
+      if (toolbar.hasFocus) return;
+      wristHint.classList.remove('is-fired');
+      void wristHint.offsetWidth;
+      wristHint.classList.add('is-fired');
+      openSearch();
+    },
   });
 
   toolbar.setStatus(idleStatus());
@@ -154,7 +285,7 @@ async function start(): Promise<void> {
         ? `${result.hits.length} matches · ${ms} ms${result.typeIntent ? ` · ${result.typeIntent}` : ''}`
         : `No matches for “${trimmed}”`,
     );
-    toolbar.setHasResults(field.currentMode === 'results');
+    setHasResults(field.currentMode === 'results');
     if (options.commit && result.hits.length) {
       const state: HistoryState = { gm: 'results', q: trimmed };
       if ((history.state as HistoryState)?.gm === 'results') history.replaceState(state, '');
@@ -176,7 +307,7 @@ async function start(): Promise<void> {
     lastResult = null;
     committedQuery = '';
     toolbar.setQuery('');
-    toolbar.setHasResults(false);
+    setHasResults(false);
     toolbar.setStatus(idleStatus());
     if (field.currentMode === 'results') field.showBrowse();
     if (!fromHistory && (history.state as HistoryState)?.gm === 'results') history.back();
@@ -197,6 +328,7 @@ async function start(): Promise<void> {
     pool.setLive(null);
     fieldHost.inert = true;
     toolbar.element.inert = true;
+    resultsSearch.inert = true;
     viewer.open(contextFor(instance));
     history.pushState({ gm: 'viewer', id: instance.item.id } satisfies HistoryState, '');
   }
@@ -223,6 +355,7 @@ async function start(): Promise<void> {
     viewer.close();
     fieldHost.inert = false;
     toolbar.element.inert = false;
+    resultsSearch.inert = false;
     field.setActive(true);
     field.restoreFocus();
     if (!fromHistory && (history.state as HistoryState)?.gm === 'viewer') history.back();
@@ -314,6 +447,7 @@ async function start(): Promise<void> {
           viewer: viewer.isOpen ? viewer.item?.id ?? null : null,
           items: items.length,
           index: indexSource,
+          wrist: wrist.status,
         };
       },
     }),
