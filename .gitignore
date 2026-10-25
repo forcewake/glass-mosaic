@@ -1,0 +1,10 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+public/data/search-index.json
+*.log
+.DS_Store
+*.tsbuildinfo
+public/data/catalog.legacy.json
+.vite/
