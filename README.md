@@ -92,6 +92,7 @@ Useful URL parameters:
 | `?render=dom` | DOM fallback with plain images instead of WebGL. Also used automatically when WebGL2 is missing or the context is lost. |
 | `?wrist=0` / `?wrist=1` | Turn the experimental wrist-twist gesture off / on (remembered in `localStorage`). |
 | `?debug=1` | Keep the diagnostics line visible: `WebMCP: unavailable` or `WebMCP: N tools` (from `document.modelContext.getTools()`, live: 3 on the mosaic and results, 5 in the viewer, plus any registration errors) and `Wrist: on / off / unavailable`; with `?debug=1` it also lists the tool names. Without it the line shows for about 4 s at launch. |
+| `?webmcp=simple` | Field test that mirrors the [facebook/meta_glasses_webmcp](https://github.com/facebook/meta_glasses_webmcp) samples (`src/app/webmcp-simple.ts`): all six `mosaic_*` tools registered once at load with a plain `registerTool(tool)` (no options, no `AbortSignal`, no per-screen swaps), only `readOnlyHint` on `mosaic_get_state`, short title and descriptions, `{ ok, next_action }` JSON results, every tool usable on every screen. Calls are logged to `window.GlassMosaic.log` (last 25); the diagnostics line reads `WebMCP simple: N tools`. The default mode is unchanged. |
 | `?seed=42` / `?seed=math` | Shuffle seed for the mosaic order. The default is fixed so screenshots are reproducible. |
 
 ### Checks

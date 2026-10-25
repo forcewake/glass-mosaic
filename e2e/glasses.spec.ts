@@ -591,3 +591,46 @@ test('wrist twist opens search with a stand-in emg-wrist sensor (early frame fli
   await compose(page, 'ocean');
   await expect.poll(async () => (await state(page)).mode).toBe('results');
 });
+
+test('?webmcp=simple registers all six tools once, with no options and no signal, and they work on every screen', async ({ page }) => {
+  await page.addInitScript(() => {
+    const calls: Array<{ name: string; argc: number; annotations?: Record<string, boolean> }> = [];
+    const tools = new Map<string, { execute: (input: unknown) => Promise<string> }>();
+    Object.defineProperty(document, 'modelContext', {
+      value: {
+        registerTool: (...args: unknown[]) => {
+          const tool = args[0] as { name: string; annotations?: Record<string, boolean>; execute: (input: unknown) => Promise<string> };
+          if (tools.has(tool.name)) throw new DOMException('Tool already registered', 'InvalidStateError');
+          calls.push({ name: tool.name, argc: args.length, annotations: tool.annotations });
+          tools.set(tool.name, tool);
+        },
+        getTools: async () => [...tools.keys()].map((name) => ({ name })),
+      },
+    });
+    (window as unknown as { __simple: unknown }).__simple = { calls, tools };
+  });
+  await ready(page, './?webmcp=simple&debug=1');
+  type Simple = { calls: Array<{ name: string; argc: number; annotations?: Record<string, boolean> }>; tools: Map<string, { execute: (i: unknown) => Promise<string> }> };
+  const calls = await page.evaluate(() => (window as unknown as { __simple: Simple }).__simple.calls);
+  expect(calls.map((c) => c.name)).toEqual(['mosaic_get_state', 'mosaic_search', 'mosaic_open_item', 'mosaic_next_item', 'mosaic_previous_item', 'mosaic_close_viewer']);
+  expect(calls.every((c) => c.argc === 1)).toBe(true);
+  expect(calls[0].annotations).toEqual({ readOnlyHint: true });
+  expect(calls.slice(1).every((c) => c.annotations === undefined)).toBe(true);
+  await expect(page.locator('.diag')).toContainText('WebMCP simple: 6 tools (mosaic_get_state,');
+  await expect(page).toHaveTitle(/^Glass Mosaic — a mosaic of photos, videos and sounds\. .* Screen: mosaic\.$/);
+
+  const call = async (name: string, input: unknown = {}) =>
+    JSON.parse(await page.evaluate(([n, i]) => (window as unknown as { __simple: Simple }).__simple.tools.get(n as string)!.execute(i), [name, input] as const)) as Record<string, unknown>;
+  expect(await call('mosaic_close_viewer')).toMatchObject({ ok: false });
+  expect(await call('mosaic_next_item')).toMatchObject({ ok: true, opened: true, screen: 'viewer' });
+  expect(await call('mosaic_search', { query: 'mountains' })).toMatchObject({ ok: true });
+  expect((await state(page)).mode).toBe('results');
+  expect(await call('mosaic_open_item', { position: 2 })).toMatchObject({ ok: true, screen: 'viewer' });
+  expect(await call('mosaic_open_item', { position: 3 })).toMatchObject({ ok: true, screen: 'viewer', item: { position: expect.stringMatching(/^3 of /) } });
+  expect(await call('mosaic_next_item')).toMatchObject({ ok: true, item: { position: expect.stringMatching(/^4 of /) } });
+  expect(await call('mosaic_close_viewer')).toMatchObject({ ok: true, screen: 'results' });
+  // Never re-registered per screen.
+  expect(await page.evaluate(() => (window as unknown as { __simple: Simple }).__simple.calls.length)).toBe(6);
+  const log = await page.evaluate(() => (window as unknown as { GlassMosaic: { log: Array<{ tool: string; ok: boolean }> } }).GlassMosaic.log);
+  expect(log.map((r) => r.tool)).toEqual(['mosaic_close_viewer', 'mosaic_next_item', 'mosaic_search', 'mosaic_open_item', 'mosaic_open_item', 'mosaic_next_item', 'mosaic_close_viewer']);
+});

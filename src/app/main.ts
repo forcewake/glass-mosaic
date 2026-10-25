@@ -17,6 +17,15 @@ import { Toolbar } from './toolbar';
 import { Viewer, type ViewerContext } from './viewer';
 import { AgentNotReady, registerAgentTools, webmcpStatus, type AgentApi, type AgentState } from './webmcp';
 import { liveTitle } from './title';
+import {
+  SIMPLE_DESCRIPTION,
+  createCallLog,
+  isSimpleMode,
+  registerSimpleTools,
+  simpleStatus,
+  simpleTitle,
+  simpleToolDefinitions,
+} from './webmcp-simple';
 import { installDoubleArrowUp } from './doubletap';
 import { WristGesture, type WristStatus } from './wrist';
 
@@ -59,13 +68,48 @@ const ready = (): AgentApi => {
   if (!agentImpl) throw new AgentNotReady('Glass Mosaic is still loading. Try again in a moment.');
   return agentImpl;
 };
-const agentTools = registerAgentTools({
+const forwardingApi: AgentApi = {
   state: () => ready().state(),
   search: (query) => ready().search(query),
   open: (position) => ready().open(position),
   step: (delta) => ready().step(delta),
   close: () => ready().close(),
-});
+};
+// `?webmcp=simple`: a field test mirroring facebook/meta_glasses_webmcp
+// (webmcp-simple.ts). All six tools, once, no signal, no per-screen swaps.
+const simpleMode = isSimpleMode(location.search);
+const callLog = createCallLog();
+const simpleReg = simpleMode ? registerSimpleTools(
+      simpleToolDefinitions(forwardingApi, callLog.record, {
+        // The viewer closes through history.back(): wait for its popstate (at most 500 ms).
+        settle: () =>
+          new Promise<void>((resolve) => {
+            const done = () => {
+              window.removeEventListener('popstate', done);
+              window.setTimeout(resolve, 0);
+            };
+            window.addEventListener('popstate', done);
+            window.setTimeout(done, 500);
+          }),
+      }),
+    ) : null;
+if (simpleMode) {
+  document.title = simpleTitle({ mode: 'mosaic', query: '', matches: 0, item: null });
+  document.querySelector('meta[name="description"]')?.setAttribute('content', SIMPLE_DESCRIPTION);
+  Object.defineProperty(window, 'GlassMosaic', {
+    value: Object.freeze({ webmcp: 'simple', log: callLog.log, registration: simpleReg }),
+  });
+}
+const agentTools: ReturnType<typeof registerAgentTools> = simpleMode
+  ? {
+      available: Boolean(simpleReg?.available),
+      screen: 'browse',
+      ready: Promise.resolve(),
+      setScreen: () => Promise.resolve(),
+      onChange: () => {},
+      dispose: () => {},
+    }
+  : registerAgentTools(forwardingApi);
 
 // Diagnostics: always for ~4 s at launch, permanently with `?debug=1`.
 const diag = document.createElement('p');
@@ -97,7 +141,7 @@ if (!debug) {
 let diagSeq = 0;
 const refreshWebmcpDiag = () => {
   const seq = ++diagSeq;
-  void webmcpStatus(debug)
+  void (simpleReg ? simpleStatus(simpleReg, debug) : webmcpStatus(debug))
     .catch(() => 'WebMCP: status failed')
     .then((text) => {
       if (seq !== diagSeq) return;
@@ -428,7 +472,7 @@ async function start(): Promise<void> {
   // Samples (todo/src/view.ts): the title keeps the standing rule and names
   // the live screen, updated on every screen change.
   function updateTitle(): void {
-    document.title = liveTitle(agentState());
+    document.title = simpleMode ? simpleTitle(agentState()) : liveTitle(agentState());
   }
 
   const agent: AgentApi = {
